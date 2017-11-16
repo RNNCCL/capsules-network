@@ -1,14 +1,14 @@
 import tensorflow as tf
 import numpy as np
 
-
 class CapsuleNetwork(object):
-    def __init__(self, n_inputs, routing_iters=3, optimizer=tf.train.AdamOptimizer(learning_rate=0.001)):
+    def __init__(self, n_inputs, routing_iters=3, reconstruct=False, optimizer=tf.train.AdamOptimizer(learning_rate=0.001)):
         # self.graph = tf.Graph()
         # with self.graph.as_default():
 
         self.n_inputs = n_inputs
         self.n_routing_iters = routing_iters
+        self.recon = reconstruct
 
         self.X_in = tf.placeholder(tf.float32, (self.n_inputs, 784))
         self.X = tf.reshape(self.X_in, (self.n_inputs, 28, 28, 1))
@@ -16,7 +16,7 @@ class CapsuleNetwork(object):
         self.Y = tf.reshape(self.Y_in, (self.n_inputs, 1, 10))
         self.d_capsules = self._network()
 
-        self.cost = self.cost()
+        self.cost, self.recon = self.cost()
         self.optimizer = optimizer.minimize(self.cost)
 
         init = tf.global_variables_initializer()
@@ -65,7 +65,26 @@ class CapsuleNetwork(object):
 
         return v_j
 
+    def _reconstruct(self, capsules):
+        with tf.name_scope('reconstruct'):
+            recon1 = tf.contrib.layers.fully_connected(capsules, num_outputs=512)
+            recon2 = tf.contrib.layers.fully_connected(recon1, num_outputs=1024)
+            output = tf.contrib.layers.fully_connected(recon2, num_outputs=784, activation_fn=tf.sigmoid)
+
+        # self.reconstructed = output
+        return output
+
+    def recon_cost(self):
+        d_capsules_masked = tf.multiply(tf.squeeze(self.d_capsules), tf.reshape(self.Y, (-1, 10, 1)))
+        d_capsules_masked = tf.reduce_sum(d_capsules_masked, axis=1) # since all except the correct one should be masked
+        recon_output = self._reconstruct(d_capsules_masked)
+        # test = self._reconstruct(tf.squeeze(self.d_capsules))
+        cost = tf.square(recon_output - tf.reshape(self.X_in, [self.n_inputs, -1]))
+        cost = tf.reduce_sum(cost, axis=1, keep_dims=True)
+        return cost, recon_output
+
     def cost(self):
+        # margin loss
         m_plus = tf.constant(0.90, dtype=tf.float32)
         m_minus = tf.constant(0.10, dtype=tf.float32)
         cost_lambda = tf.constant(0.50, dtype=tf.float32)
@@ -74,17 +93,25 @@ class CapsuleNetwork(object):
         d_caps_norm = tf.squeeze(d_caps_norm, axis=3)
 
         total_cost = tf.reduce_sum(tf.multiply(self.Y, tf.square(tf.maximum(0.0, m_plus - d_caps_norm))), axis=2)
-        assert total_cost.get_shape() == (self.n_inputs, 1)
-
         total_cost += cost_lambda * tf.reduce_sum(tf.multiply(1 - self.Y, tf.square(tf.maximum(0.0, d_caps_norm - m_minus))), axis=2)
-        assert total_cost.get_shape() == (self.n_inputs, 1)
+
+        # reconstruction loss
+        # if self.recon:
+        recon_lambda = tf.constant(0.0005, dtype=tf.float32)
+        cost, recon = self.recon_cost()
+        total_cost += recon_lambda * cost
 
         total_cost = tf.reduce_sum(total_cost) / self.n_inputs
-        return total_cost
+        return total_cost, recon
 
     def fit(self, x, y):
-        cost, opt = self.sess.run((self.cost, self.optimizer), feed_dict={self.X_in: x, self.Y_in: y})
+        cost, opt = self.sess.run([self.cost, self.optimizer], feed_dict={self.X_in: x, self.Y_in: y})
         return cost
+
+    def reconstruction(self, x, y):
+        # output = self._reconstruct(self.d_capsules)
+        recon_img = self.sess.run(self.recon, feed_dict={self.X_in: x, self.Y_in: y})
+        return recon_img
 
 
 
